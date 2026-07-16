@@ -3744,15 +3744,17 @@ class AIAgent:
 
 
 
-    def _build_system_prompt_parts(self, system_message: str = None) -> Dict[str, str]:
+    def _build_system_prompt_parts(self, system_message: str = None, query_text: str = None) -> Dict[str, str]:
         """Forwarder — see ``agent.system_prompt.build_system_prompt_parts``."""
         from agent.system_prompt import build_system_prompt_parts
-        return build_system_prompt_parts(self, system_message=system_message)
+        return build_system_prompt_parts(
+            self, system_message=system_message, query_text=query_text
+        )
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
+    def _build_system_prompt(self, system_message: str = None, query_text: str = None) -> str:
         """Forwarder — see ``agent.system_prompt.build_system_prompt``."""
         from agent.system_prompt import build_system_prompt
-        return build_system_prompt(self, system_message=system_message)
+        return build_system_prompt(self, system_message=system_message, query_text=query_text)
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:

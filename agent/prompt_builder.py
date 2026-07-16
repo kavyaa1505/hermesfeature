@@ -1455,11 +1455,13 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    query_text: "str | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
     Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden,
+         query_prefix)
       2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
          mtime/size manifest — survives process restarts
 
@@ -1475,6 +1477,15 @@ def build_skills_system_prompt(
     the rendered index. Nothing is ever hidden: every skill name stays
     visible and loadable via ``skill_view`` / ``skills_list``; only the
     descriptions are dropped, and a footer note explains the demotion.
+
+    ``query_text`` (the user's first message of the session) activates hybrid
+    skill retrieval when ``skills.semantic_search.enabled`` is true (the
+    default).  Only the top-k most relevant skills are shown with full
+    descriptions; all others appear as names-only so the agent can still load
+    any of them via ``skill_view(name)``.  Falls back to full-index rendering
+    on any error or when the skill count is at or below top_k.
+    This is called once per session at build time; the result is cached both
+    in-process and in SQLite, preserving the byte-stable prefix-cache contract.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1495,6 +1506,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        (query_text or "")[:128],
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1650,30 +1662,95 @@ def build_skills_system_prompt(
             "normally and load with skill_view(name) as usual.)"
         )
 
+    # ── Hybrid per-message skill retrieval ────────────────────────────
+    # When query_text is present and semantic_search.enabled is true (the
+    # default), rank all skills against the user's first message using BM25 +
+    # optional dense re-ranking fused with RRF. Split the result into two tiers:
+    #   featured_skills  → rendered with full "name: description" lines
+    #   everyone else    → rendered as a names-only footer line
+    #
+    # The agent can still call skill_view(name) on any non-featured skill;
+    # no information is ever suppressed, only condensed.
+    #
+    # Falls back to full-index rendering (featured_skills = None) on any
+    # error, when retrieval is disabled, or when skill count ≤ top_k.
+    featured_skills: "set[str] | None" = None
+    if query_text:
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config()
+            _ss: dict = ((_cfg.get("skills") or {}).get("semantic_search") or {})
+            if _ss.get("enabled", True):
+                _top_k = max(1, int(_ss.get("top_k", 5)))
+                _all_skills = [
+                    {"name": name, "description": desc}
+                    for cat_skills in skills_by_category.values()
+                    for name, desc in cat_skills
+                ]
+                if len(_all_skills) > _top_k:
+                    from agent.skill_retrieval import retrieve_skills
+                    featured_skills = retrieve_skills(
+                        query_text,
+                        _all_skills,
+                        top_k=_top_k,
+                        embedding_cfg=_ss if _ss.get("embedding_model") else None,
+                    )
+        except Exception as _exc:
+            logger.debug(
+                "Skill retrieval failed, falling back to full index: %s", _exc
+            )
+            featured_skills = None
+
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
+        index_lines: list[str] = []
+        non_featured_names: list[str] = []
+
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
-            seen = set()
+            seen: set[str] = set()
             if category in demoted:
                 names = sorted({name for name, _ in skills_by_category[category]})
                 index_lines.append(f"  {category} [names only]: {', '.join(names)}")
                 continue
             cat_desc = category_descriptions.get(category, "")
+            # Track whether any featured skill lands in this category so we
+            # can remove an orphaned category header.
+            cat_header_idx = len(index_lines)
             if cat_desc:
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
+            has_featured_in_category = False
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
+                # Retrieval ran: demote non-featured to the names-only bucket
+                if featured_skills is not None and name not in featured_skills:
+                    non_featured_names.append(name)
+                    continue
+                has_featured_in_category = True
                 if desc:
                     index_lines.append(f"    - {name}: {desc}")
                 else:
                     index_lines.append(f"    - {name}")
+            # If retrieval ran and demoted every skill in this category,
+            # remove the orphaned category header we just added.
+            if featured_skills is not None and not has_featured_in_category:
+                del index_lines[cat_header_idx]
+
+        # Non-featured skills: names-only footer so the agent can reach them
+        if non_featured_names:
+            index_lines.append(
+                "  [other skills, names only]: "
+                + ", ".join(sorted(non_featured_names))
+            )
+            index_lines.append(
+                "  (load any with skill_view(name) — only the most relevant "
+                "skills for this turn are shown with full descriptions above)"
+            )
 
         result = (
             "## Skills (mandatory)\n"

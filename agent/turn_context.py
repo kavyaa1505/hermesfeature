@@ -365,23 +365,17 @@ def build_turn_context(
         )
 
     # ── System prompt (cached per session for prefix caching) ──
-    # Force rebuild on every turn if semantic search is enabled to allow
-    # per-message skill retrieval (hybrid BM25 + optional dense re-ranking).
-    try:
-        from hermes_cli.config import load_config as _load_config
-        _cfg = _load_config()
-        _ss = (_cfg.get("skills") or {}).get("semantic_search") or {}
-        _semantic_enabled = _ss.get("enabled", True)
-    except Exception:
-        _semantic_enabled = True
-
-    if _semantic_enabled:
-        agent._cached_system_prompt = None
-
+    # Built once on the first turn and reused for the life of the session to
+    # keep the upstream prefix cache warm (byte-stable prompt invariant).
+    # query_text is the user's current message; it is forwarded only on the
+    # first-turn build so build_skills_system_prompt can rank skills by
+    # relevance.  The ranked result is persisted to the session DB and reused
+    # on all subsequent turns unchanged — this preserves the invariant while
+    # still surfacing the most relevant skills for the conversation.
     if agent._cached_system_prompt is None:
         restore_or_build_system_prompt(
             agent, system_message, conversation_history,
-            query_text=user_message if _semantic_enabled else None,
+            query_text=user_message,
         )
 
     active_system_prompt = agent._cached_system_prompt

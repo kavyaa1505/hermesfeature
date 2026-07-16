@@ -349,8 +349,10 @@ class TestPromptBuilderIntegration:
         """Call build_skills_system_prompt with patched retrieval."""
         from agent.prompt_builder import build_skills_system_prompt
 
-        with patch("agent.prompt_builder.retrieve_skills", return_value=set(featured_names)):
-            with patch("agent.prompt_builder._load_config", return_value={
+        # Patch retrieve_skills inside prompt_builder and the config loader
+        # at its local import alias so the integration layer is fully isolated.
+        with patch("agent.skill_retrieval.retrieve_skills", return_value=set(featured_names)):
+            with patch("hermes_cli.config.load_config", return_value={
                 "skills": {
                     "semantic_search": {
                         "enabled": True,

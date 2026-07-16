@@ -308,16 +308,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history,
     stored_prompt = None
     stored_state = "missing"
 
-    # We bypass DB restore when query_text is present to allow per-message semantic skills retrieval
-    try:
-        from hermes_cli.config import load_config as _load_config
-        _cfg = _load_config()
-        _ss = (_cfg.get("skills") or {}).get("semantic_search") or {}
-        _semantic_enabled = _ss.get("enabled", True)
-    except Exception:
-        _semantic_enabled = True
-
-    if conversation_history and agent._session_db and not (query_text and _semantic_enabled):
+    if conversation_history and agent._session_db:
         try:
             session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
@@ -365,12 +356,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history,
             agent.session_id, stored_state,
         )
 
-    # First turn of a new session (or recovering from a broken stored
-    # prompt, or query-based semantic retrieval is active) — build from scratch.
-    if query_text is not None:
-        agent._cached_system_prompt = agent._build_system_prompt(system_message, query_text=query_text)
-    else:
-        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    # First turn of a new session (or recovering from a broken stored prompt).
+    # Forward query_text so build_skills_system_prompt can rank skills by
+    # relevance at build time.  The result is cached byte-for-byte and reused
+    # for all subsequent turns — this preserves the prefix-cache invariant.
+    agent._cached_system_prompt = agent._build_system_prompt(
+        system_message, query_text=query_text
+    )
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this

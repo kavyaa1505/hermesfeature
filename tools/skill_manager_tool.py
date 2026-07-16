@@ -855,6 +855,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
+    # Invalidate the semantic skill index so the next session build re-ranks.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([name])
+    except Exception:
+        pass  # index is best-effort; never block skill management
     return result
 
 
@@ -1021,6 +1027,12 @@ def _patch_skill(
         "old": old_string[:200] + ("…" if len(old_string) > 200 else ""),
         "new": new_string[:200] + ("…" if len(new_string) > 200 else ""),
     }
+    # Invalidate the semantic skill index so the next session build re-ranks.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([name])
+    except Exception:
+        pass  # index is best-effort; never block skill management
     return result
 
 
@@ -1122,6 +1134,13 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     message = f"Skill '{name}' deleted."
     if is_consolidation:
         message += f" Content absorbed into '{absorbed_target}'."
+
+    # Invalidate the semantic skill index so the deleted skill is dropped.
+    try:
+        from agent.skill_retrieval import get_index
+        get_index().invalidate([name])
+    except Exception:
+        pass  # index is best-effort; never block skill management
 
     return {
         "success": True,

@@ -143,7 +143,11 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
-def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
+def build_system_prompt_parts(
+    agent: Any,
+    system_message: Optional[str] = None,
+    query_text: Optional[str] = None,
+) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
     Returns a dict with three keys:
@@ -160,6 +164,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     AIAgent.  Hermes never re-renders parts of this string mid-
     session — that's the only way to keep upstream prompt caches
     warm across turns.
+
+    ``query_text`` (the user's first message) is forwarded to
+    ``build_skills_system_prompt`` for hybrid BM25 + dense ranking at
+    session-build time.  It does not vary the prompt on subsequent turns.
     """
     # Local import to avoid pulling model_tools at module load.  Tests
     # patch ``run_agent.get_toolset_for_tool`` and similar helpers, so
@@ -316,6 +324,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
             compact_categories=_compact_cats or None,
+            query_text=query_text or None,
         )
     else:
         skills_prompt = ""
@@ -516,7 +525,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     }
 
 
-def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str:
+def build_system_prompt(
+    agent: Any,
+    system_message: Optional[str] = None,
+    query_text: Optional[str] = None,
+) -> str:
     """Assemble the full system prompt from all layers.
 
     Called once per session (cached on ``agent._cached_system_prompt``) and
@@ -530,8 +543,13 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     one cached block — Hermes never rebuilds or reinjects parts of it
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
+
+    ``query_text`` (the user's first message) is forwarded to skill ranking
+    at build time only; the result is cached byte-for-byte for the session.
     """
-    parts = build_system_prompt_parts(agent, system_message=system_message)
+    parts = build_system_prompt_parts(
+        agent, system_message=system_message, query_text=query_text
+    )
     joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 
     # Surface context-file truncation warnings through the normal agent status
